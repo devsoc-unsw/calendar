@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "outDir": "./built",
+    "allowJs": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2024",
+    "lib": ["ES2024"],
+    "strict": true,
+    "noImplicitAny": true
+  },
+  "include": ["./src/**/*", "eslint.config.ts"],
+  "exclude": ["node_modules", "built"]
+}
