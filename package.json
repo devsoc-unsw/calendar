@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "description": "A simple API to fetch key UNSW academic calendar dates",
   "scripts": {
-    "prepare": "husky",
+    "prepare": "node -e \"if (process.env.npm_config_production==='true') process.exit(0); require('child_process').spawnSync(process.platform==='win32'?'pnpm.cmd':'pnpm',['exec','husky'],{stdio:'inherit'})\"",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node built/server.js",
+    "start": "node dist/server.js",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
     "format": "prettier --write src/**/*.ts",
