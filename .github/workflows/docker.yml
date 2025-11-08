@@ -1,0 +1,71 @@
+name: Docker
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    name: 'Build'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+          platforms: linux/amd64
+          file: Dockerfile
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ghcr.io/devsoc-unsw/calendar:${{ github.sha }}
+            ghcr.io/devsoc-unsw/calendar:latest
+          labels: ${{ steps.meta.outputs.labels }}
+  deploy:
+    name: Deploy (CD)
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+    concurrency: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: devsoc-unsw/deployment
+          token: ${{ secrets.GH_TOKEN }}
+          ref: dev
+      - name: Install yq - portable yaml processor
+        uses: mikefarah/yq@v4.44.2
+      - name: Update deployment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config user.name "CSESoc CD"
+          git config user.email "technical@csesoc.org.au"
+
+          git checkout -b update/calendar/${{ github.sha }}
+          yq -i '.items[0].spec.template.spec.containers[0].image = "ghcr.io/devsoc-unsw/calendar:${{ github.sha }}"' projects/calendar/deploy.yml
+
+          git add . 
+          git commit -m "feat(calendar): update images" 
+          git push -u origin update/calendar/${{ github.sha }}
+          gh pr create -B dev --title "feat(calendar): update images" --body "Updates the images for the calendar API to commit devsoc-unsw/calendar@${{ github.sha }}." > URL
+          gh pr merge $(cat URL) --squash -d
