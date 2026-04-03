@@ -4,30 +4,38 @@ on:
     branches:
       - master
 
+permissions: {}
+
 jobs:
   build:
     name: 'Build'
     runs-on: ubuntu-latest
+    concurrency:
+      group: docker-build-${{ github.ref }}
+      cancel-in-progress: true
+    timeout-minutes: 30
     permissions:
       contents: read
-      packages: write
+      packages: write # Required to publish the calendar image to GHCR.
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         with:
           platforms: arm64
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Log into registry ${{ env.REGISTRY }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
           platforms: linux/amd64
@@ -37,35 +45,48 @@ jobs:
           tags: |
             ghcr.io/devsoc-unsw/calendar:${{ github.sha }}
             ghcr.io/devsoc-unsw/calendar:latest
-          labels: ${{ steps.meta.outputs.labels }}
-  deploy:
-    name: Deploy (CD)
+  repo_dispatch:
+    name: Notify deployment repo
     runs-on: ubuntu-latest
     needs: [build]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
-    concurrency: production
-
+    concurrency:
+      group: docker-repo-dispatch-${{ github.ref }}
+      cancel-in-progress: true
+    timeout-minutes: 10
+    permissions: {}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3.0.0
         with:
-          repository: devsoc-unsw/deployment
-          token: ${{ secrets.GH_TOKEN }}
-          ref: dev
-      - name: Install yq - portable yaml processor
-        uses: mikefarah/yq@v4.44.2
-      - name: Update deployment
+          app-id: ${{ vars.IMAGE_UPDATER_APP_ID }}
+          private-key: ${{ secrets.IMAGE_UPDATER_APP_PRIVATE_KEY }}
+          owner: devsoc-unsw
+          repositories: deployment
+          permission-actions: write
+
+      - name: Send workflow_dispatch
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          git config user.name "CSESoc CD"
-          git config user.email "technical@csesoc.org.au"
+          updates_json="$(
+            jq -cn \
+              --arg sha "${IMAGE_TAG}" \
+              '[{image: "ghcr.io/devsoc-unsw/calendar", tag: $sha}]'
+          )"
+          payload_json="$(
+            jq -cn \
+              --arg ref "dev" \
+              --arg updates "${updates_json}" \
+              '{ref: $ref, inputs: {updates: $updates}}'
+          )"
 
-          git checkout -b update/calendar/${{ github.sha }}
-          yq -i '.items[0].spec.template.spec.containers[0].image = "ghcr.io/devsoc-unsw/calendar:${{ github.sha }}"' projects/calendar/deploy.yml
-
-          git add . 
-          git commit -m "feat(calendar): update images" 
-          git push -u origin update/calendar/${{ github.sha }}
-          gh pr create -B dev --title "feat(calendar): update images" --body "Updates the images for the calendar API to commit devsoc-unsw/calendar@${{ github.sha }}." > URL
-          gh pr merge $(cat URL) --squash -d
+          curl --fail-with-body \
+            -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            https://api.github.com/repos/devsoc-unsw/deployment/actions/workflows/dispatch-image-update.yml/dispatches \
+            -d "${payload_json}"
